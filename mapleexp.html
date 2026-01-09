@@ -36,7 +36,6 @@
 <body>
   <div class="card">
     <h1>挑戰者伺服器（或其他伺服器）經驗值 / 戰力 排名查詢</h1>
-    
 
     <div class="row" style="margin-top:12px">
       <input id="nameInput" placeholder="輸入角色名稱（例：Ezra蓮）" />
@@ -56,7 +55,7 @@
     <div id="content"></div>
 
     <div class="muted" style="margin-top:10px">
-      如果載入失敗：可能API已關閉檢視。
+      如果載入失敗：可能 API 已關閉檢視（或試算表未公開）。
     </div>
   </div>
 
@@ -103,6 +102,32 @@ function toNumber(v){
   if (!s) return null;
   const n = Number(s.replace(/,/g,""));
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * 將 level_plus_exp_rate 例如 281059.449 拆成：
+ * - 等級：281
+ * - 經驗值%：059.449（固定 3 位整數 + 3 位小數）
+ */
+function splitLevelExpRate(expVal){
+  if (expVal === null || expVal === undefined || !Number.isFinite(expVal)) {
+    return { level: "-", expPct: "-" };
+  }
+
+  let level = Math.floor(expVal / 1000);
+  let rem = expVal - level * 1000;
+
+  // 避免浮點誤差把 999.999 -> 1000.000
+  if (rem >= 999.9995) {
+    level += 1;
+    rem = 0;
+  }
+
+  const remFixed = rem.toFixed(3);          // "59.449"
+  const [i, d] = remFixed.split(".");
+  const expPct = i.padStart(3, "0") + "." + d; // "059.449"
+
+  return { level, expPct };
 }
 
 function gvizUrl(){
@@ -272,12 +297,16 @@ function runSearch(){
     if (fuzzy.length){
       contentEl.innerHTML =
         `<div class="muted">可能是名稱不完全一致，以下是包含「${escapeHtml(targetName)}」的前 20 筆：</div>` +
-        tableHtml(["name","world","level_plus_exp_rate","battle_power"], fuzzy.map(r=>[
-          escapeHtml(r.name),
-          escapeHtml(r.world),
-          r.exp ?? "-",
-          r.bp ?? "-"
-        ]));
+        tableHtml(["遊戲ID","伺服器","等級","經驗值%","戰鬥力"], fuzzy.map(r=>{
+          const s = splitLevelExpRate(r.exp);
+          return [
+            escapeHtml(r.name),
+            escapeHtml(r.world),
+            s.level,
+            s.expPct,
+            r.bp ?? "-"
+          ];
+        }));
     } else {
       contentEl.innerHTML = "";
     }
@@ -299,22 +328,25 @@ function runSearch(){
     };
   });
 
-  // 如果同名多筆，通常你想看 exp 最大那筆；我們同時也把全部列出來
-  // 並把 exp 由大到小顯示
+  // 同名多筆時，先以 exp 由大到小
   out.sort((a,b)=> (b.exp??-1)-(a.exp??-1));
 
   setStatus(`找到 ${out.length} 筆「${targetName}」資料。`, true);
 
   contentEl.innerHTML = tableHtml(
-    ["遊戲ID","伺服器","等級經驗百分比","經驗排名","戰鬥力","戰力排名"],
-    out.map(x => [
-      `<span class="pill">${escapeHtml(x.name)}</span>`,
-      escapeHtml(x.world),
-      (x.exp ?? "-"),
-      (x.expRank === "-" ? "-" : `第${x.expRank}名`),
-      (x.bp ?? "-"),
-      (x.bpRank === "-" ? "-" : `第${x.bpRank}名`)
-    ])
+    ["遊戲ID","伺服器","等級","經驗值%","經驗排名","戰鬥力","戰力排名"],
+    out.map(x => {
+      const s = splitLevelExpRate(x.exp);
+      return [
+        `<span class="pill">${escapeHtml(x.name)}</span>`,
+        escapeHtml(x.world),
+        s.level,
+        s.expPct,
+        (x.expRank === "-" ? "-" : `第${x.expRank}名`),
+        (x.bp ?? "-"),
+        (x.bpRank === "-" ? "-" : `第${x.bpRank}名`)
+      ];
+    })
   );
 }
 
@@ -338,15 +370,31 @@ function renderTop(metric){
 
   setStatus(`顯示 ${world} 前 100 名（${metric === "exp" ? "經驗" : "戰力"}）。`, true);
 
-  contentEl.innerHTML = tableHtml(
-    ["排名","name","world", metric === "exp" ? "level_plus_exp_rate" : "battle_power"],
-    top.map(x => [
-      `<span class="mono">#${x.rank}</span>`,
-      escapeHtml(x.name),
-      escapeHtml(x.world),
-      x.value ?? "-"
-    ])
-  );
+  if (metric === "exp") {
+    contentEl.innerHTML = tableHtml(
+      ["排名","name","world","等級","經驗值%"],
+      top.map(x => {
+        const s = splitLevelExpRate(Number(x.value));
+        return [
+          `<span class="mono">#${x.rank}</span>`,
+          escapeHtml(x.name),
+          escapeHtml(x.world),
+          s.level,
+          s.expPct
+        ];
+      })
+    );
+  } else {
+    contentEl.innerHTML = tableHtml(
+      ["排名","name","world","battle_power"],
+      top.map(x => [
+        `<span class="mono">#${x.rank}</span>`,
+        escapeHtml(x.name),
+        escapeHtml(x.world),
+        x.value ?? "-"
+      ])
+    );
+  }
 }
 
 function setActiveTab(tab){
