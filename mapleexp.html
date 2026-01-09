@@ -298,6 +298,39 @@ function formatBattlePower(v){
   return out;
 }
 
+/* =========================
+   ✅ 並列排名工具（競賽排名：會跳號）
+   例：1,1,3,4...
+========================= */
+function sameNumber(a, b, eps = 1e-9){
+  return (a !== null && b !== null && Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= eps);
+}
+function buildCompetitionRankMap(sortedList, getVal){
+  const m = new Map();
+  let prevVal = null;
+  let prevRank = 0;
+
+  for (let i = 0; i < sortedList.length; i++){
+    const r = sortedList[i];
+    const v = getVal(r);
+    let rank;
+
+    if (i === 0){
+      rank = 1;
+    } else if (sameNumber(v, prevVal)){
+      rank = prevRank;
+    } else {
+      rank = i + 1; // 競賽排名：跳號
+    }
+
+    m.set(r.rowIdx, rank);
+    prevVal = v;
+    prevRank = rank;
+  }
+  return m;
+}
+/* ========================= */
+
 /** 日期解析 */
 function parseDateLoose(s){
   if (!s) return null;
@@ -506,7 +539,7 @@ async function loadData(){
   if (qName) runSearch();
 }
 
-/** ✅ 排名包：worldKey="__ALL__" -> 全伺服器合併排名 */
+/** ✅ 排名包：worldKey="__ALL__" -> 全伺服器合併排名（並列同名次） */
 function buildRanks(worldKey){
   if (rankCache.has(worldKey)) return rankCache.get(worldKey);
 
@@ -516,22 +549,20 @@ function buildRanks(worldKey){
     .filter(r => r.exp !== null)
     .slice()
     .sort((a,b) => (b.exp - a.exp) || (a.rowIdx - b.rowIdx));
-  const expRank = new Map();
-  expSorted.forEach((r,i) => expRank.set(r.rowIdx, i+1));
+  const expRank = buildCompetitionRankMap(expSorted, r => r.exp);
 
   const bpSorted = group
     .filter(r => r.bp !== null)
     .slice()
     .sort((a,b) => (b.bp - a.bp) || (a.rowIdx - b.rowIdx));
-  const bpRank = new Map();
-  bpSorted.forEach((r,i) => bpRank.set(r.rowIdx, i+1));
+  const bpRank = buildCompetitionRankMap(bpSorted, r => r.bp);
 
   const pack = { expRank, bpRank, expSorted, bpSorted };
   rankCache.set(worldKey, pack);
   return pack;
 }
 
-/** ✅ 職業內排名：worldKey="__ALL__" -> 全伺服器同職業合併排名 */
+/** ✅ 職業內排名：worldKey="__ALL__" -> 全伺服器同職業合併排名（並列同名次） */
 function buildJobRanks(worldKey, job){
   const key = `${worldKey}||${job}`;
   if (jobRankCache.has(key)) return jobRankCache.get(key);
@@ -543,15 +574,13 @@ function buildJobRanks(worldKey, job){
     .filter(r => r.exp !== null)
     .slice()
     .sort((a,b) => (b.exp - a.exp) || (a.rowIdx - b.rowIdx));
-  const expJobRank = new Map();
-  expSorted.forEach((r,i) => expJobRank.set(r.rowIdx, i+1));
+  const expJobRank = buildCompetitionRankMap(expSorted, r => r.exp);
 
   const bpSorted = group
     .filter(r => r.bp !== null)
     .slice()
     .sort((a,b) => (b.bp - a.bp) || (a.rowIdx - b.rowIdx));
-  const bpJobRank = new Map();
-  bpSorted.forEach((r,i) => bpJobRank.set(r.rowIdx, i+1));
+  const bpJobRank = buildCompetitionRankMap(bpSorted, r => r.bp);
 
   const pack = { expJobRank, bpJobRank };
   jobRankCache.set(key, pack);
@@ -664,23 +693,40 @@ function renderTop(metric){
   const worldKey = worldKeyForTop(); // "__ALL__" or specific
   const jobFilter = jobSelect.value || "__ALL_JOB__";
 
-  // ✅ buildRanks("__ALL__") 代表全伺服器合併榜
+  // ✅ buildRanks("__ALL__") 代表全伺服器合併榜（且已是並列排名）
   const pack = buildRanks(worldKey);
   let list = (metric === "exp") ? pack.expSorted : pack.bpSorted;
 
-  // 套用職業篩選
+  // 套用職業篩選（保留原排序）
   if (jobFilter !== "__ALL_JOB__"){
     list = list.filter(r => r.job === jobFilter);
   }
 
-  const top = list.slice(0, 100).map((r,i) => {
+  // ✅ 針對「目前榜單 list」計算並列名次（跳號）
+  const listRankMap = buildCompetitionRankMap(
+    list,
+    r => (metric === "exp" ? r.exp : r.bp)
+  );
+
+  // ✅ 前 100 名：若第 100 名與後面同值，全部同名次一起顯示（可能 >100 筆）
+  let end = Math.min(100, list.length);
+  if (list.length > 100){
+    const v100 = (metric === "exp") ? list[99].exp : list[99].bp;
+    while (end < list.length){
+      const vNext = (metric === "exp") ? list[end].exp : list[end].bp;
+      if (!sameNumber(vNext, v100)) break;
+      end++;
+    }
+  }
+
+  const top = list.slice(0, end).map((r) => {
     const jobPack = buildJobRanks(worldKey, r.job);
     const jobRank = (metric === "exp")
       ? (jobPack.expJobRank.get(r.rowIdx) ?? "-")
       : (jobPack.bpJobRank.get(r.rowIdx) ?? "-");
 
     return {
-      rank: i+1, // 篩選後榜單重新編號
+      rank: listRankMap.get(r.rowIdx) ?? "-",
       name: r.name,
       world: r.world,
       job: r.job,
@@ -700,8 +746,9 @@ function renderTop(metric){
       ["排名","name","world","職業","等級","經驗值%","職業經驗排名","更新時間"],
       top.map(x => {
         const s = splitLevelExpRate(Number(x.value));
+        const rk = (x.rank === "-" ? "-" : `#${x.rank}`);
         return [
-          `<span class="mono">#${x.rank}</span>`,
+          `<span class="mono">${escapeHtml(rk)}</span>`,
           escapeHtml(x.name),
           escapeHtml(x.world),
           escapeHtml(x.job),
@@ -717,8 +764,9 @@ function renderTop(metric){
       ["排名","name","world","職業","戰鬥力","職業戰力排名","更新時間"],
       top.map(x => {
         const bpText = formatBattlePower(x.value);
+        const rk = (x.rank === "-" ? "-" : `#${x.rank}`);
         return [
-          `<span class="mono">#${x.rank}</span>`,
+          `<span class="mono">${escapeHtml(rk)}</span>`,
           escapeHtml(x.name),
           escapeHtml(x.world),
           escapeHtml(x.job),
