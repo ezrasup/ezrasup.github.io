@@ -6,7 +6,7 @@
   <title>經驗值/戰力 排名查詢</title>
   <style>
     body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans TC","Microsoft JhengHei",sans-serif;margin:24px;line-height:1.5}
-    .card{max-width:980px;margin:0 auto;border:1px solid #e5e7eb;border-radius:14px;padding:18px;box-shadow:0 2px 14px rgba(0,0,0,.05)}
+    .card{max-width:1100px;margin:0 auto;border:1px solid #e5e7eb;border-radius:14px;padding:18px;box-shadow:0 2px 14px rgba(0,0,0,.05)}
     h1{margin:0 0 8px;font-size:20px}
     .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
     input,select,button{font-size:14px;padding:10px 12px;border:1px solid #d1d5db;border-radius:10px}
@@ -21,7 +21,7 @@
     .bad{color:#991b1b}
     table{width:100%;border-collapse:collapse;margin-top:12px}
     th,td{border-bottom:1px solid #e5e7eb;padding:10px;text-align:left;font-size:14px;vertical-align:top}
-    th{background:#f9fafb}
+    th{background:#f9fafb;position:sticky;top:0;z-index:1}
     .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#f3f4f6;font-size:12px}
     .tabs{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
     .tabs button{background:#fff;color:#111827}
@@ -29,6 +29,7 @@
     .small{font-size:12px;color:#6b7280}
     .right{margin-left:auto}
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
+    .nowrap{white-space:nowrap}
 
     /* ===== 全畫面 Loading Overlay ===== */
     .overlay{
@@ -115,7 +116,7 @@
   </div>
 
   <div class="card">
-    <h1>挑戰者伺服器（或其他伺服器）經驗值 / 戰力 排名查詢</h1>
+    <h1>挑戰者伺服器（或其他伺服器）經驗值 / 戰力 / 職業內排名 查詢</h1>
 
     <div class="row" style="margin-top:12px">
       <input id="nameInput" placeholder="輸入角色名稱（例：Ezra蓮）" />
@@ -161,9 +162,10 @@ const tabTopExp = $("tabTopExp");
 const tabTopBp = $("tabTopBp");
 const metaInfo = $("metaInfo");
 
-let rows = [];              // {rowIdx, name, world, exp, bp, updatedText, updatedDate}
+let rows = [];              // {rowIdx, name, world, job, exp, bp, updatedText, updatedDate}
 let worlds = [];
-let rankCache = new Map();
+let rankCache = new Map();      // world -> {expRank,bpRank,expSorted,bpSorted}
+let jobRankCache = new Map();   // `${world}||${job}` -> {expJobRank,bpJobRank}
 let loadedAt = null;
 let latestUpdated = null;
 
@@ -188,7 +190,6 @@ function startLoadingProgress(){
 
   progressTimer = setInterval(()=>{
     progressTicks++;
-
     if (progressTicks === 8)  progressHint.textContent = "下載資料中…";
     if (progressTicks === 28) progressHint.textContent = "解析資料中…";
     if (progressTicks === 55) progressHint.textContent = "整理伺服器清單…";
@@ -318,7 +319,6 @@ function parseUpdatedCell(cell){
   const s = normalizeText(v);
   if (!s) return { text: "-", date: null };
 
-  // 可能長得像：Date(2026,0,8,21,3,51)
   const m = s.match(/^Date\((\d+),(\d+),(\d+)(?:,(\d+),(\d+),(\d+))?\)$/);
   if (m){
     const yy = Number(m[1]);
@@ -376,13 +376,15 @@ async function loadData(){
   const cols = table.cols;
   const iName    = detectColIndex(cols, "name");
   const iWorld   = detectColIndex(cols, "world_name");
+  const iJob     = detectColIndex(cols, "job");                 // ✅ 新增：職業
   const iExp     = detectColIndex(cols, "level_plus_exp_rate");
   const iBp      = detectColIndex(cols, "battle_power");
-  const iUpdated = detectColIndex(cols, "updated"); // ✅ 新增：更新時間欄位
+  const iUpdated = detectColIndex(cols, "updated");
 
   const missing = [];
   if (iName < 0)    missing.push("name");
   if (iWorld < 0)   missing.push("world_name");
+  if (iJob < 0)     missing.push("job");
   if (iExp < 0)     missing.push("level_plus_exp_rate");
   if (iBp < 0)      missing.push("battle_power");
   if (iUpdated < 0) missing.push("updated");
@@ -396,20 +398,26 @@ async function loadData(){
     const c = r.c || [];
     const name  = normalizeText(c[iName]?.v);
     const world = normalizeText(c[iWorld]?.v);
+    const job   = normalizeText(c[iJob]?.v) || "-";
     const exp   = toNumber(c[iExp]?.v);
     const bp    = toNumber(c[iBp]?.v);
+    const up    = parseUpdatedCell(c[iUpdated]);
 
-    const up = parseUpdatedCell(c[iUpdated]);
     return {
       rowIdx: idx,
       name,
       world,
+      job,
       exp,
       bp,
       updatedText: up.text || "-",
       updatedDate: up.date || null
     };
   }).filter(x => x.name && x.world);
+
+  // ✅ 清掉快取（資料可能變動）
+  rankCache.clear();
+  jobRankCache.clear();
 
   // ✅ 計算整份資料「最新更新時間」
   latestUpdated = null;
@@ -484,6 +492,34 @@ function buildRanksForWorld(world){
   return pack;
 }
 
+/** ✅ 職業內排名：在同伺服器 + 同職業內，再依 exp/bp 大到小排序（同分看 rowIdx） */
+function buildJobRanks(world, job){
+  const key = `${world}||${job}`;
+  if (jobRankCache.has(key)) return jobRankCache.get(key);
+
+  const group = rows.filter(r => r.world === world && r.job === job);
+
+  const expSorted = group
+    .filter(r => r.exp !== null)
+    .slice()
+    .sort((a,b) => (b.exp - a.exp) || (a.rowIdx - b.rowIdx));
+
+  const expJobRank = new Map();
+  expSorted.forEach((r,i) => expJobRank.set(r.rowIdx, i+1));
+
+  const bpSorted = group
+    .filter(r => r.bp !== null)
+    .slice()
+    .sort((a,b) => (b.bp - a.bp) || (a.rowIdx - b.rowIdx));
+
+  const bpJobRank = new Map();
+  bpSorted.forEach((r,i) => bpJobRank.set(r.rowIdx, i+1));
+
+  const pack = { expJobRank, bpJobRank };
+  jobRankCache.set(key, pack);
+  return pack;
+}
+
 function tableHtml(headers, rows2d){
   const thead = `<thead><tr>${headers.map(h=>`<th>${h}</th>`).join("")}</tr></thead>`;
   const tbody = `<tbody>${rows2d.map(r=>`<tr>${r.map(cell=>`<td>${cell}</td>`).join("")}</tr>`).join("")}</tbody>`;
@@ -524,16 +560,17 @@ function runSearch(){
     if (fuzzy.length){
       contentEl.innerHTML =
         `<div class="muted">可能是名稱不完全一致，以下是包含「${escapeHtml(targetName)}」的前 20 筆：</div>` +
-        tableHtml(["遊戲ID","伺服器","等級","經驗值%","戰鬥力","更新時間"], fuzzy.map(r=>{
+        tableHtml(["遊戲ID","伺服器","職業","等級","經驗值%","戰鬥力","更新時間"], fuzzy.map(r=>{
           const s = splitLevelExpRate(r.exp);
           const bpText = formatBattlePower(r.bp);
           return [
             escapeHtml(r.name),
             escapeHtml(r.world),
+            escapeHtml(r.job),
             s.level,
             s.expPct,
             `<span title="${escapeHtml(r.bp ?? "")}">${escapeHtml(bpText)}</span>`,
-            escapeHtml(r.updatedText || "-")
+            `<span class="nowrap">${escapeHtml(r.updatedText || "-")}</span>`
           ];
         }));
     } else {
@@ -544,15 +581,24 @@ function runSearch(){
 
   const out = candidates.map(r => {
     const pack = buildRanksForWorld(r.world);
+    const jobPack = buildJobRanks(r.world, r.job);
+
     const expRank = (r.exp !== null) ? (pack.expRank.get(r.rowIdx) ?? "-") : "-";
-    const bpRank = (r.bp !== null) ? (pack.bpRank.get(r.rowIdx) ?? "-") : "-";
+    const bpRank  = (r.bp  !== null) ? (pack.bpRank.get(r.rowIdx)  ?? "-") : "-";
+
+    const expJobRank = (r.exp !== null) ? (jobPack.expJobRank.get(r.rowIdx) ?? "-") : "-";
+    const bpJobRank  = (r.bp  !== null) ? (jobPack.bpJobRank.get(r.rowIdx)  ?? "-") : "-";
+
     return {
       name: r.name,
       world: r.world,
+      job: r.job,
       exp: r.exp,
       expRank,
+      expJobRank,
       bp: r.bp,
       bpRank,
+      bpJobRank,
       updatedText: r.updatedText || "-"
     };
   });
@@ -562,19 +608,22 @@ function runSearch(){
   setStatus(`找到 ${out.length} 筆「${targetName}」資料。`, true);
 
   contentEl.innerHTML = tableHtml(
-    ["遊戲ID","伺服器","等級","經驗值%","經驗排名","戰鬥力","戰力排名","更新時間"],
+    ["遊戲ID","伺服器","職業","等級","經驗值%","經驗排名","職業經驗排名","戰鬥力","戰力排名","職業戰力排名","更新時間"],
     out.map(x => {
       const s = splitLevelExpRate(x.exp);
       const bpText = formatBattlePower(x.bp);
       return [
         `<span class="pill">${escapeHtml(x.name)}</span>`,
         escapeHtml(x.world),
+        escapeHtml(x.job),
         s.level,
         s.expPct,
         (x.expRank === "-" ? "-" : `第${x.expRank}名`),
+        (x.expJobRank === "-" ? "-" : `第${x.expJobRank}名`),
         `<span title="${escapeHtml(x.bp ?? "")}">${escapeHtml(bpText)}</span>`,
         (x.bpRank === "-" ? "-" : `第${x.bpRank}名`),
-        escapeHtml(x.updatedText || "-")
+        (x.bpJobRank === "-" ? "-" : `第${x.bpJobRank}名`),
+        `<span class="nowrap">${escapeHtml(x.updatedText || "-")}</span>`
       ];
     })
   );
@@ -591,42 +640,55 @@ function renderTop(metric){
   const pack = buildRanksForWorld(world);
   const list = (metric === "exp") ? pack.expSorted : pack.bpSorted;
 
-  const top = list.slice(0, 100).map((r,i) => ({
-    rank: i+1,
-    name: r.name,
-    world: r.world,
-    value: (metric === "exp") ? r.exp : r.bp,
-    updatedText: r.updatedText || "-"
-  }));
+  const top = list.slice(0, 100).map((r,i) => {
+    const jobPack = buildJobRanks(world, r.job);
+    const jobRank = (metric === "exp")
+      ? (jobPack.expJobRank.get(r.rowIdx) ?? "-")
+      : (jobPack.bpJobRank.get(r.rowIdx) ?? "-");
+
+    return {
+      rank: i+1,
+      name: r.name,
+      world: r.world,
+      job: r.job,
+      value: (metric === "exp") ? r.exp : r.bp,
+      jobRank,
+      updatedText: r.updatedText || "-"
+    };
+  });
 
   setStatus(`顯示 ${world} 前 100 名（${metric === "exp" ? "經驗" : "戰力"}）。`, true);
 
   if (metric === "exp") {
     contentEl.innerHTML = tableHtml(
-      ["排名","name","world","等級","經驗值%","更新時間"],
+      ["排名","name","world","職業","等級","經驗值%","職業經驗排名","更新時間"],
       top.map(x => {
         const s = splitLevelExpRate(Number(x.value));
         return [
           `<span class="mono">#${x.rank}</span>`,
           escapeHtml(x.name),
           escapeHtml(x.world),
+          escapeHtml(x.job),
           s.level,
           s.expPct,
-          escapeHtml(x.updatedText || "-")
+          (x.jobRank === "-" ? "-" : `第${x.jobRank}名`),
+          `<span class="nowrap">${escapeHtml(x.updatedText || "-")}</span>`
         ];
       })
     );
   } else {
     contentEl.innerHTML = tableHtml(
-      ["排名","name","world","戰鬥力","更新時間"],
+      ["排名","name","world","職業","戰鬥力","職業戰力排名","更新時間"],
       top.map(x => {
         const bpText = formatBattlePower(x.value);
         return [
           `<span class="mono">#${x.rank}</span>`,
           escapeHtml(x.name),
           escapeHtml(x.world),
+          escapeHtml(x.job),
           `<span title="${escapeHtml(x.value ?? "")}">${escapeHtml(bpText)}</span>`,
-          escapeHtml(x.updatedText || "-")
+          (x.jobRank === "-" ? "-" : `第${x.jobRank}名`),
+          `<span class="nowrap">${escapeHtml(x.updatedText || "-")}</span>`
         ];
       })
     );
