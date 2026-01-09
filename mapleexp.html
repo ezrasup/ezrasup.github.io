@@ -42,7 +42,7 @@
     }
     .overlay.show{display:flex;}
     .overlay-card{
-      width:min(520px, 100%);
+      width:min(560px, 100%);
       border:1px solid #e5e7eb;
       border-radius:16px;
       background:#fff;
@@ -50,7 +50,7 @@
       box-shadow:0 10px 30px rgba(0,0,0,.08);
       display:flex;
       gap:14px;
-      align-items:center;
+      align-items:flex-start;
     }
     .spinner{
       width:42px;height:42px;border-radius:999px;
@@ -58,24 +58,58 @@
       border-top-color:#111827;
       animation:spin 0.9s linear infinite;
       flex:0 0 auto;
+      margin-top:2px;
     }
     @keyframes spin{to{transform:rotate(360deg)}}
     .overlay-title{font-weight:700;margin:0 0 2px;font-size:15px}
     .overlay-sub{margin:0;color:#6b7280;font-size:13px}
-    .overlay-meta{margin-top:6px;color:#9ca3af;font-size:12px}
+
+    /* 進度條 */
+    .progress-wrap{margin-top:10px}
+    .progress{
+      width:100%;
+      height:10px;
+      border-radius:999px;
+      background:#eef2f7;
+      overflow:hidden;
+      border:1px solid #e5e7eb;
+    }
+    .progress-bar{
+      height:100%;
+      width:0%;
+      background:#111827;
+      border-radius:999px;
+      transition:width .18s ease;
+    }
+    .progress-row{
+      display:flex;
+      justify-content:space-between;
+      gap:10px;
+      margin-top:8px;
+      font-size:12px;
+      color:#6b7280;
+    }
+    .progress-row .pct{font-variant-numeric:tabular-nums;color:#111827;font-weight:700}
     /* ================================= */
   </style>
 </head>
 <body>
 
-  <!-- 全畫面 Loading -->
+  <!-- 全畫面 Loading + 進度條 -->
   <div id="overlay" class="overlay" aria-live="polite" aria-busy="true">
     <div class="overlay-card">
       <div class="spinner" aria-hidden="true"></div>
-      <div>
+      <div style="flex:1">
         <div id="overlayTitle" class="overlay-title">資料載入中…</div>
         <p id="overlaySub" class="overlay-sub">正在從 Google 試算表抓取最新資料，請稍候。</p>
-        <div id="overlayMeta" class="overlay-meta"></div>
+
+        <div class="progress-wrap">
+          <div class="progress"><div id="progressBar" class="progress-bar"></div></div>
+          <div class="progress-row">
+            <span id="progressHint">連線中…</span>
+            <span class="pct" id="progressPct">0%</span>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -116,7 +150,9 @@ const $ = (id) => document.getElementById(id);
 const overlay = $("overlay");
 const overlayTitle = $("overlayTitle");
 const overlaySub = $("overlaySub");
-const overlayMeta = $("overlayMeta");
+const progressBar = $("progressBar");
+const progressPct = $("progressPct");
+const progressHint = $("progressHint");
 
 const statusEl = $("status");
 const contentEl = $("content");
@@ -134,6 +170,59 @@ let worlds = [];
 let rankCache = new Map();
 let loadedAt = null;
 
+/* ===== 進度條（假進度：0→92，完成跳 100） ===== */
+let progressValue = 0;
+let progressTimer = null;
+let progressTicks = 0;
+
+function setProgress(p, hint){
+  progressValue = Math.max(0, Math.min(100, p));
+  const pct = Math.round(progressValue);
+  progressBar.style.width = pct + "%";
+  progressPct.textContent = pct + "%";
+  if (typeof hint === "string") progressHint.textContent = hint;
+}
+
+function startLoadingProgress(){
+  stopLoadingProgress();
+  progressValue = 0;
+  progressTicks = 0;
+  setProgress(1, "連線中…");
+
+  progressTimer = setInterval(()=>{
+    progressTicks++;
+
+    // 依時間切換提示字
+    if (progressTicks === 8)  progressHint.textContent = "下載資料中…";
+    if (progressTicks === 28) progressHint.textContent = "解析資料中…";
+    if (progressTicks === 55) progressHint.textContent = "整理伺服器清單…";
+
+    // 慢慢逼近 92%
+    const target = 92;
+    const step = Math.max(0.35, (target - progressValue) * 0.06);
+    progressValue = Math.min(target, progressValue + step);
+    setProgress(progressValue);
+  }, 120);
+}
+
+function stopLoadingProgress(){
+  if (progressTimer){
+    clearInterval(progressTimer);
+    progressTimer = null;
+  }
+}
+
+function finishLoadingProgress(ok){
+  stopLoadingProgress();
+  if (ok){
+    setProgress(98, "即將完成…");
+    setTimeout(()=>setProgress(100, "完成"), 120);
+  } else {
+    setProgress(100, "失敗");
+  }
+}
+/* ================================================ */
+
 function setUiDisabled(disabled){
   searchBtn.disabled = disabled;
   shareBtn.disabled = disabled;
@@ -144,12 +233,12 @@ function setUiDisabled(disabled){
   worldSelect.disabled = disabled;
 }
 
-function showOverlay(title="資料載入中…", sub="正在從 Google 試算表抓取最新資料，請稍候。", meta=""){
+function showOverlay(title="資料載入中…", sub="正在從 Google 試算表抓取最新資料，請稍候。"){
   overlayTitle.textContent = title;
   overlaySub.textContent = sub;
-  overlayMeta.textContent = meta || "";
   overlay.classList.add("show");
   setUiDisabled(true);
+  startLoadingProgress();
 }
 function hideOverlay(){
   overlay.classList.remove("show");
@@ -230,7 +319,7 @@ function detectColIndex(cols, label){
 }
 
 async function loadData(){
-  showOverlay("資料載入中…", "正在從 Google 試算表抓取最新資料，請稍候。", "若資料很多，第一次載入可能會稍久一點。");
+  showOverlay("資料載入中…", "正在從 Google 試算表抓取最新資料，請稍候。");
   setStatus("載入資料中…");
 
   const res = await fetch(gvizUrl(), { cache: "no-store" });
@@ -239,6 +328,9 @@ async function loadData(){
 
   const table = json.table;
   if (!table || !table.cols || !table.rows) throw new Error("讀不到資料表（可能未公開）");
+
+  // 解析階段：提示更換
+  setProgress(progressValue, "解析欄位中…");
 
   const cols = table.cols;
   const iName  = detectColIndex(cols, "name");
@@ -255,6 +347,8 @@ async function loadData(){
     throw new Error("找不到欄位：" + missing.join(", ") + "（請確認試算表標題列）");
   }
 
+  setProgress(progressValue, "整理資料中…");
+
   rows = table.rows.map((r, idx) => {
     const c = r.c || [];
     const name = normalizeText(c[iName]?.v);
@@ -263,6 +357,8 @@ async function loadData(){
     const bp = toNumber(c[iBp]?.v);
     return { rowIdx: idx, name, world, exp, bp };
   }).filter(x => x.name && x.world);
+
+  setProgress(progressValue, "建立伺服器清單…");
 
   const set = new Set(rows.map(r => r.world));
   worlds = Array.from(set).sort((a,b)=>a.localeCompare(b, "zh-Hant"));
@@ -293,7 +389,9 @@ async function loadData(){
   if (qName) nameInput.value = qName;
   if (qWorld && (qWorld === "__ALL__" || worlds.includes(qWorld))) worldSelect.value = qWorld;
 
-  hideOverlay();
+  // 完成：跳 100% 後再關閉 overlay
+  finishLoadingProgress(true);
+  setTimeout(()=>hideOverlay(), 260);
 
   if (qName) runSearch();
 }
@@ -495,7 +593,8 @@ nameInput.addEventListener("keydown", (e)=>{ if (e.key==="Enter") setActiveTab("
 // 先載入
 loadData().catch(err=>{
   console.error(err);
-  hideOverlay();
+  finishLoadingProgress(false);
+  setTimeout(()=>hideOverlay(), 380);
   setStatus("載入失敗：" + (err?.message || err), false);
 });
 </script>
