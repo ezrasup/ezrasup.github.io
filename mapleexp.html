@@ -26,8 +26,6 @@
     .tabs{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
     .tabs button{background:#fff;color:#111827}
     .tabs button.active{background:#111827;color:#fff;border-color:#111827}
-    .grid2{display:grid;grid-template-columns:1fr;gap:12px}
-    @media (min-width:900px){.grid2{grid-template-columns:1fr 1fr}}
     .small{font-size:12px;color:#6b7280}
     .right{margin-left:auto}
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
@@ -81,7 +79,6 @@ const metaInfo = $("metaInfo");
 let rows = [];              // 全資料：{rowIdx, name, world, exp, bp}
 let worlds = [];            // 伺服器列表
 let rankCache = new Map();  // world -> {expRank: Map(rowIdx->rank), bpRank: Map(rowIdx->rank), expSorted, bpSorted}
-let activeTab = "result";
 let loadedAt = null;
 
 function setStatus(msg, ok=true){
@@ -90,7 +87,6 @@ function setStatus(msg, ok=true){
 }
 
 function normalizeText(v){
-  // 去掉：一般空白、全形空白、NBSP
   const s = (v ?? "").toString();
   return s.replace(/\u00A0/g,"").replace(/\u3000/g,"").trim();
 }
@@ -117,11 +113,7 @@ function splitLevelExpRate(expVal){
   let level = Math.floor(expVal / 1000);
   let rem = expVal - level * 1000;
 
-  // 避免浮點誤差把 999.999 -> 1000.000
-  if (rem >= 999.9995) {
-    level += 1;
-    rem = 0;
-  }
+  if (rem >= 999.9995) { level += 1; rem = 0; }
 
   const remFixed = rem.toFixed(3);          // "59.449"
   const [i, d] = remFixed.split(".");
@@ -130,18 +122,41 @@ function splitLevelExpRate(expVal){
   return { level, expPct };
 }
 
+/**
+ * 將戰鬥力數字顯示成中文單位：兆 / 億 / 萬
+ * 例：103580175 -> 1億358萬175
+ */
+function formatBattlePower(v){
+  const n0 = toNumber(v);
+  if (n0 === null) return "-";
+  let n = Math.floor(n0);
+  if (!Number.isFinite(n)) return "-";
+
+  const units = [
+    { value: 1e12, label: "兆" },
+    { value: 1e8,  label: "億" },
+    { value: 1e4,  label: "萬" },
+  ];
+
+  let out = "";
+  for (const u of units){
+    const q = Math.floor(n / u.value);
+    if (q > 0){
+      out += `${q}${u.label}`;
+      n = n % u.value;
+    }
+  }
+  if (n > 0 || out === "") out += `${n}`;
+  return out;
+}
+
 function gvizUrl(){
-  // out:json 會回傳 google.visualization.Query.setResponse(...)
   const base = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq`;
-  const params = new URLSearchParams({
-    tqx: "out:json",
-    sheet: SHEET_NAME
-  });
+  const params = new URLSearchParams({ tqx: "out:json", sheet: SHEET_NAME });
   return `${base}?${params.toString()}`;
 }
 
 function parseGviz(text){
-  // 去掉前綴 /*O_o*/\n...setResponse( ... );
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
   if (start < 0 || end < 0) throw new Error("GViz 回傳格式不正確");
@@ -149,7 +164,6 @@ function parseGviz(text){
 }
 
 function detectColIndex(cols, label){
-  // 依欄位 label 找 index（欄位名就是第一列標題）
   return cols.findIndex(c => normalizeText(c.label) === label);
 }
 
@@ -165,7 +179,6 @@ async function loadData(){
   const table = json.table;
   if (!table || !table.cols || !table.rows) throw new Error("讀不到資料表（可能未公開）");
 
-  // 依標題找欄位（不硬寫 A/B/C/F，避免你以後欄位位置變了）
   const cols = table.cols;
   const iName  = detectColIndex(cols, "name");
   const iWorld = detectColIndex(cols, "world_name");
@@ -181,7 +194,6 @@ async function loadData(){
     throw new Error("找不到欄位：" + missing.join(", ") + "（請確認試算表標題列）");
   }
 
-  // 轉成我們需要的 rows
   rows = table.rows.map((r, idx) => {
     const c = r.c || [];
     const name = normalizeText(c[iName]?.v);
@@ -189,13 +201,11 @@ async function loadData(){
     const exp = toNumber(c[iExp]?.v);
     const bp = toNumber(c[iBp]?.v);
     return { rowIdx: idx, name, world, exp, bp };
-  }).filter(x => x.name && x.world); // 基本清理
+  }).filter(x => x.name && x.world);
 
-  // 伺服器列表
   const set = new Set(rows.map(r => r.world));
   worlds = Array.from(set).sort((a,b)=>a.localeCompare(b, "zh-Hant"));
 
-  // world 下拉
   worldSelect.innerHTML = "";
   const optAll = document.createElement("option");
   optAll.value = "__ALL__";
@@ -209,7 +219,6 @@ async function loadData(){
     worldSelect.appendChild(opt);
   }
 
-  // 預設挑戰者（如果存在）
   if (worlds.includes("挑戰者")) worldSelect.value = "挑戰者";
 
   loadedAt = new Date();
@@ -219,7 +228,6 @@ async function loadData(){
   searchBtn.disabled = false;
   shareBtn.disabled = false;
 
-  // URL 參數自動查詢
   const sp = new URLSearchParams(location.search);
   const qName = sp.get("name");
   const qWorld = sp.get("world");
@@ -233,7 +241,6 @@ function buildRanksForWorld(world){
 
   const group = rows.filter(r => r.world === world);
 
-  // EXP 排序（值大到小，同分用 rowIdx 小的在前 = 原始資料順序）
   const expSorted = group
     .filter(r => r.exp !== null)
     .slice()
@@ -242,7 +249,6 @@ function buildRanksForWorld(world){
   const expRank = new Map();
   expSorted.forEach((r,i) => expRank.set(r.rowIdx, i+1));
 
-  // BP 排序
   const bpSorted = group
     .filter(r => r.bp !== null)
     .slice()
@@ -287,7 +293,6 @@ function runSearch(){
   }
 
   if (!candidates.length){
-    // 提供包含字的建議（避免使用者打錯或多空白）
     const fuzzy = rows
       .filter(r => r.name.includes(targetName) && (targetWorld==="__ALL__" || r.world===targetWorld))
       .slice(0, 20);
@@ -299,12 +304,13 @@ function runSearch(){
         `<div class="muted">可能是名稱不完全一致，以下是包含「${escapeHtml(targetName)}」的前 20 筆：</div>` +
         tableHtml(["遊戲ID","伺服器","等級","經驗值%","戰鬥力"], fuzzy.map(r=>{
           const s = splitLevelExpRate(r.exp);
+          const bpText = formatBattlePower(r.bp);
           return [
             escapeHtml(r.name),
             escapeHtml(r.world),
             s.level,
             s.expPct,
-            r.bp ?? "-"
+            `<span title="${escapeHtml(r.bp ?? "")}">${escapeHtml(bpText)}</span>`
           ];
         }));
     } else {
@@ -313,22 +319,13 @@ function runSearch(){
     return;
   }
 
-  // 針對每筆 candidate 算名次（EXP/BP 都算）
   const out = candidates.map(r => {
     const pack = buildRanksForWorld(r.world);
     const expRank = (r.exp !== null) ? (pack.expRank.get(r.rowIdx) ?? "-") : "-";
     const bpRank = (r.bp !== null) ? (pack.bpRank.get(r.rowIdx) ?? "-") : "-";
-    return {
-      name: r.name,
-      world: r.world,
-      exp: r.exp,
-      expRank,
-      bp: r.bp,
-      bpRank
-    };
+    return { name: r.name, world: r.world, exp: r.exp, expRank, bp: r.bp, bpRank };
   });
 
-  // 同名多筆時，先以 exp 由大到小
   out.sort((a,b)=> (b.exp??-1)-(a.exp??-1));
 
   setStatus(`找到 ${out.length} 筆「${targetName}」資料。`, true);
@@ -337,13 +334,14 @@ function runSearch(){
     ["遊戲ID","伺服器","等級","經驗值%","經驗排名","戰鬥力","戰力排名"],
     out.map(x => {
       const s = splitLevelExpRate(x.exp);
+      const bpText = formatBattlePower(x.bp);
       return [
         `<span class="pill">${escapeHtml(x.name)}</span>`,
         escapeHtml(x.world),
         s.level,
         s.expPct,
         (x.expRank === "-" ? "-" : `第${x.expRank}名`),
-        (x.bp ?? "-"),
+        `<span title="${escapeHtml(x.bp ?? "")}">${escapeHtml(bpText)}</span>`,
         (x.bpRank === "-" ? "-" : `第${x.bpRank}名`)
       ];
     })
@@ -351,7 +349,7 @@ function runSearch(){
 }
 
 function renderTop(metric){
-  const world = worldSelect.value === "__ALL__" ? "挑戰者" : worldSelect.value; // 全部伺服器時，榜單預設顯示挑戰者
+  const world = worldSelect.value === "__ALL__" ? "挑戰者" : worldSelect.value;
   if (!worlds.includes(world)){
     setStatus("請先選一個存在的伺服器（建議選：挑戰者）。", false);
     contentEl.innerHTML = "";
@@ -386,19 +384,21 @@ function renderTop(metric){
     );
   } else {
     contentEl.innerHTML = tableHtml(
-      ["排名","name","world","battle_power"],
-      top.map(x => [
-        `<span class="mono">#${x.rank}</span>`,
-        escapeHtml(x.name),
-        escapeHtml(x.world),
-        x.value ?? "-"
-      ])
+      ["排名","name","world","戰鬥力"],
+      top.map(x => {
+        const bpText = formatBattlePower(x.value);
+        return [
+          `<span class="mono">#${x.rank}</span>`,
+          escapeHtml(x.name),
+          escapeHtml(x.world),
+          `<span title="${escapeHtml(x.value ?? "")}">${escapeHtml(bpText)}</span>`
+        ];
+      })
     );
   }
 }
 
 function setActiveTab(tab){
-  activeTab = tab;
   [tabResult, tabTopExp, tabTopBp].forEach(b=>b.classList.remove("active"));
   if (tab==="result") tabResult.classList.add("active");
   if (tab==="topExp") tabTopExp.classList.add("active");
@@ -422,7 +422,6 @@ function copyShareLink(){
   });
 }
 
-// 事件
 searchBtn.addEventListener("click", ()=>setActiveTab("result"));
 shareBtn.addEventListener("click", copyShareLink);
 tabResult.addEventListener("click", ()=>setActiveTab("result"));
@@ -430,7 +429,6 @@ tabTopExp.addEventListener("click", ()=>setActiveTab("topExp"));
 tabTopBp.addEventListener("click", ()=>setActiveTab("topBp"));
 nameInput.addEventListener("keydown", (e)=>{ if (e.key==="Enter") setActiveTab("result"); });
 
-// 先載入
 loadData().catch(err=>{
   console.error(err);
   setStatus("載入失敗：" + (err?.message || err), false);
