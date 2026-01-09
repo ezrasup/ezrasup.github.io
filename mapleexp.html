@@ -121,6 +121,10 @@
     <div class="row" style="margin-top:12px">
       <input id="nameInput" placeholder="輸入角色名稱（例：Ezra蓮）" />
       <select id="worldSelect"></select>
+
+      <!-- ✅ 新增：職業篩選（主要用在前100名） -->
+      <select id="jobSelect" title="前100名可用：職業篩選"></select>
+
       <button id="searchBtn">查詢</button>
       <button id="shareBtn" class="secondary">複製查詢連結</button>
     </div>
@@ -155,6 +159,7 @@ const statusEl = $("status");
 const contentEl = $("content");
 const nameInput = $("nameInput");
 const worldSelect = $("worldSelect");
+const jobSelect = $("jobSelect");
 const searchBtn = $("searchBtn");
 const shareBtn = $("shareBtn");
 const tabResult = $("tabResult");
@@ -168,6 +173,7 @@ let rankCache = new Map();      // world -> {expRank,bpRank,expSorted,bpSorted}
 let jobRankCache = new Map();   // `${world}||${job}` -> {expJobRank,bpJobRank}
 let loadedAt = null;
 let latestUpdated = null;
+let activeTab = "result";
 
 /* ===== 進度條（假進度：0→92，完成跳 100） ===== */
 let progressValue = 0;
@@ -227,6 +233,7 @@ function setUiDisabled(disabled){
   tabTopBp.disabled = disabled;
   nameInput.disabled = disabled;
   worldSelect.disabled = disabled;
+  jobSelect.disabled = disabled;
 }
 
 function showOverlay(title="資料載入中…", sub="正在抓取最新資料，請稍候。"){
@@ -360,6 +367,64 @@ function detectColIndex(cols, label){
   return cols.findIndex(c => normalizeText(c.label) === label);
 }
 
+function escapeHtml(s){
+  return (s ?? "").toString()
+    .replaceAll("&","&amp;")
+    .replaceAll("<","&lt;")
+    .replaceAll(">","&gt;")
+    .replaceAll('"',"&quot;")
+    .replaceAll("'","&#039;");
+}
+
+function tableHtml(headers, rows2d){
+  const thead = `<thead><tr>${headers.map(h=>`<th>${h}</th>`).join("")}</tr></thead>`;
+  const tbody = `<tbody>${rows2d.map(r=>`<tr>${r.map(cell=>`<td>${cell}</td>`).join("")}</tr>`).join("")}</tbody>`;
+  return `<table>${thead}${tbody}</table>`;
+}
+
+/** ✅ 前100名用：實際榜單伺服器（當選「全部伺服器」時，榜單預設用「挑戰者」） */
+function worldForTop(){
+  return worldSelect.value === "__ALL__" ? "挑戰者" : worldSelect.value;
+}
+
+/** ✅ 依目前榜單伺服器刷新職業下拉（預設全部） */
+function refreshJobOptions(keepValue=true){
+  const w = worldForTop();
+  const prev = jobSelect.value;
+
+  const set = new Set();
+  for (const r of rows){
+    if (!r.job || r.job === "-") continue;
+    if (worldSelect.value === "__ALL__"){
+      // 榜單只看挑戰者（或目前 worldForTop）
+      if (r.world !== w) continue;
+    } else {
+      if (r.world !== w) continue;
+    }
+    set.add(r.job);
+  }
+  const jobs = Array.from(set).sort((a,b)=>a.localeCompare(b, "zh-Hant"));
+
+  jobSelect.innerHTML = "";
+  const optAll = document.createElement("option");
+  optAll.value = "__ALL_JOB__";
+  optAll.textContent = "全部職業";
+  jobSelect.appendChild(optAll);
+
+  for (const j of jobs){
+    const opt = document.createElement("option");
+    opt.value = j;
+    opt.textContent = j;
+    jobSelect.appendChild(opt);
+  }
+
+  if (keepValue && prev && prev !== "__ALL_JOB__" && jobs.includes(prev)){
+    jobSelect.value = prev;
+  } else {
+    jobSelect.value = "__ALL_JOB__";
+  }
+}
+
 async function loadData(){
   showOverlay("資料載入中…", "正在抓取最新資料，請稍候。");
   setStatus("載入資料中…");
@@ -376,7 +441,7 @@ async function loadData(){
   const cols = table.cols;
   const iName    = detectColIndex(cols, "name");
   const iWorld   = detectColIndex(cols, "world_name");
-  const iJob     = detectColIndex(cols, "job");                 // ✅ 新增：職業
+  const iJob     = detectColIndex(cols, "job");
   const iExp     = detectColIndex(cols, "level_plus_exp_rate");
   const iBp      = detectColIndex(cols, "battle_power");
   const iUpdated = detectColIndex(cols, "updated");
@@ -415,11 +480,9 @@ async function loadData(){
     };
   }).filter(x => x.name && x.world);
 
-  // ✅ 清掉快取（資料可能變動）
   rankCache.clear();
   jobRankCache.clear();
 
-  // ✅ 計算整份資料「最新更新時間」
   latestUpdated = null;
   for (const r of rows){
     if (r.updatedDate && (!latestUpdated || r.updatedDate > latestUpdated)){
@@ -429,8 +492,8 @@ async function loadData(){
 
   setProgress(progressValue, "建立伺服器清單…");
 
-  const set = new Set(rows.map(r => r.world));
-  worlds = Array.from(set).sort((a,b)=>a.localeCompare(b, "zh-Hant"));
+  const setW = new Set(rows.map(r => r.world));
+  worlds = Array.from(setW).sort((a,b)=>a.localeCompare(b, "zh-Hant"));
 
   worldSelect.innerHTML = "";
   const optAll = document.createElement("option");
@@ -446,6 +509,9 @@ async function loadData(){
   }
   if (worlds.includes("挑戰者")) worldSelect.value = "挑戰者";
 
+  // ✅ 先刷新職業下拉（預設全部職業）
+  refreshJobOptions(false);
+
   loadedAt = new Date();
   const latestText = latestUpdated ? latestUpdated.toLocaleString("zh-TW") : "-";
   metaInfo.textContent =
@@ -453,12 +519,22 @@ async function loadData(){
 
   setStatus("載入完成。", true);
 
-  // URL 參數自動查詢
+  // URL 參數（name/world/job）
   const sp = new URLSearchParams(location.search);
   const qName = sp.get("name");
   const qWorld = sp.get("world");
+  const qJob = sp.get("job");
+
   if (qName) nameInput.value = qName;
   if (qWorld && (qWorld === "__ALL__" || worlds.includes(qWorld))) worldSelect.value = qWorld;
+
+  // world 變了要重新刷新 job（再套用 job）
+  refreshJobOptions(false);
+  if (qJob && (qJob === "__ALL_JOB__" || Array.from(jobSelect.options).some(o=>o.value===qJob))){
+    jobSelect.value = qJob;
+  } else {
+    jobSelect.value = "__ALL_JOB__";
+  }
 
   finishLoadingProgress(true);
   setTimeout(()=>hideOverlay(), 260);
@@ -492,7 +568,7 @@ function buildRanksForWorld(world){
   return pack;
 }
 
-/** ✅ 職業內排名：在同伺服器 + 同職業內，再依 exp/bp 大到小排序（同分看 rowIdx） */
+/** 職業內排名：同伺服器 + 同職業內，再依 exp/bp 大到小排序（同分看 rowIdx） */
 function buildJobRanks(world, job){
   const key = `${world}||${job}`;
   if (jobRankCache.has(key)) return jobRankCache.get(key);
@@ -520,22 +596,9 @@ function buildJobRanks(world, job){
   return pack;
 }
 
-function tableHtml(headers, rows2d){
-  const thead = `<thead><tr>${headers.map(h=>`<th>${h}</th>`).join("")}</tr></thead>`;
-  const tbody = `<tbody>${rows2d.map(r=>`<tr>${r.map(cell=>`<td>${cell}</td>`).join("")}</tr>`).join("")}</tbody>`;
-  return `<table>${thead}${tbody}</table>`;
-}
-
-function escapeHtml(s){
-  return (s ?? "").toString()
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;")
-    .replaceAll("'","&#039;");
-}
-
 function runSearch(){
+  activeTab = "result";
+
   const targetName = normalizeText(nameInput.value);
   const targetWorld = worldSelect.value;
 
@@ -630,15 +693,24 @@ function runSearch(){
 }
 
 function renderTop(metric){
-  const world = worldSelect.value === "__ALL__" ? "挑戰者" : worldSelect.value;
+  activeTab = (metric === "exp") ? "topExp" : "topBp";
+
+  const world = worldForTop();
   if (!worlds.includes(world)){
     setStatus("請先選一個存在的伺服器（建議選：挑戰者）。", false);
     contentEl.innerHTML = "";
     return;
   }
 
+  const jobFilter = jobSelect.value || "__ALL_JOB__";
+
   const pack = buildRanksForWorld(world);
-  const list = (metric === "exp") ? pack.expSorted : pack.bpSorted;
+  let list = (metric === "exp") ? pack.expSorted : pack.bpSorted;
+
+  // ✅ 套用職業篩選（預設全部職業）
+  if (jobFilter !== "__ALL_JOB__"){
+    list = list.filter(r => r.job === jobFilter);
+  }
 
   const top = list.slice(0, 100).map((r,i) => {
     const jobPack = buildJobRanks(world, r.job);
@@ -647,7 +719,7 @@ function renderTop(metric){
       : (jobPack.bpJobRank.get(r.rowIdx) ?? "-");
 
     return {
-      rank: i+1,
+      rank: i+1, // ✅ 前100名：在篩選後的榜單中重新編號
       name: r.name,
       world: r.world,
       job: r.job,
@@ -657,7 +729,8 @@ function renderTop(metric){
     };
   });
 
-  setStatus(`顯示 ${world} 前 100 名（${metric === "exp" ? "經驗" : "戰力"}）。`, true);
+  const filterText = (jobFilter === "__ALL_JOB__") ? "全部職業" : jobFilter;
+  setStatus(`顯示 ${world} 前 100 名（${metric === "exp" ? "經驗" : "戰力"} / ${filterText}）。`, true);
 
   if (metric === "exp") {
     contentEl.innerHTML = tableHtml(
@@ -696,6 +769,8 @@ function renderTop(metric){
 }
 
 function setActiveTab(tab){
+  activeTab = tab;
+
   [tabResult, tabTopExp, tabTopBp].forEach(b=>b.classList.remove("active"));
   if (tab==="result") tabResult.classList.add("active");
   if (tab==="topExp") tabTopExp.classList.add("active");
@@ -709,9 +784,15 @@ function setActiveTab(tab){
 function copyShareLink(){
   const name = normalizeText(nameInput.value);
   const world = worldSelect.value;
+  const job = jobSelect.value || "__ALL_JOB__";
+
   const url = new URL(location.href);
   if (name) url.searchParams.set("name", name);
   url.searchParams.set("world", world);
+
+  // ✅ 把職業篩選也帶上（方便分享前100名）
+  url.searchParams.set("job", job);
+
   navigator.clipboard.writeText(url.toString()).then(()=>{
     setStatus("已複製查詢連結。", true);
   }).catch(()=>{
@@ -719,7 +800,7 @@ function copyShareLink(){
   });
 }
 
-// 事件
+/* ====== 事件 ====== */
 searchBtn.addEventListener("click", ()=>setActiveTab("result"));
 shareBtn.addEventListener("click", copyShareLink);
 tabResult.addEventListener("click", ()=>setActiveTab("result"));
@@ -727,7 +808,20 @@ tabTopExp.addEventListener("click", ()=>setActiveTab("topExp"));
 tabTopBp.addEventListener("click", ()=>setActiveTab("topBp"));
 nameInput.addEventListener("keydown", (e)=>{ if (e.key==="Enter") setActiveTab("result"); });
 
-// 先載入
+// ✅ 伺服器改變：刷新職業下拉 + 若目前在前100名頁面就重繪榜單
+worldSelect.addEventListener("change", ()=>{
+  refreshJobOptions(true);
+  if (activeTab === "topExp") renderTop("exp");
+  if (activeTab === "topBp") renderTop("bp");
+});
+
+// ✅ 職業改變：只影響前100名（經驗/戰力）
+jobSelect.addEventListener("change", ()=>{
+  if (activeTab === "topExp") renderTop("exp");
+  if (activeTab === "topBp") renderTop("bp");
+});
+
+/* ====== 先載入 ====== */
 loadData().catch(err=>{
   console.error(err);
   finishLoadingProgress(false);
