@@ -101,7 +101,7 @@
       <div class="spinner" aria-hidden="true"></div>
       <div style="flex:1">
         <div id="overlayTitle" class="overlay-title">資料載入中…</div>
-        <p id="overlaySub" class="overlay-sub">正在從 Google 試算表抓取最新資料，請稍候。</p>
+        <p id="overlaySub" class="overlay-sub">正在抓取最新資料，請稍候。</p>
 
         <div class="progress-wrap">
           <div class="progress"><div id="progressBar" class="progress-bar"></div></div>
@@ -135,7 +135,7 @@
     <div id="content"></div>
 
     <div class="muted" style="margin-top:10px">
-      如果載入失敗：可能 API 已關閉檢視（或試算表未公開）。
+      如果載入失敗：可能 API 已關閉檢視。
     </div>
   </div>
 
@@ -233,7 +233,7 @@ function setUiDisabled(disabled){
   worldSelect.disabled = disabled;
 }
 
-function showOverlay(title="資料載入中…", sub="正在從 Google 試算表抓取最新資料，請稍候。"){
+function showOverlay(title="資料載入中…", sub="正在抓取最新資料，請稍候。"){
   overlayTitle.textContent = title;
   overlaySub.textContent = sub;
   overlay.classList.add("show");
@@ -319,7 +319,7 @@ function detectColIndex(cols, label){
 }
 
 async function loadData(){
-  showOverlay("資料載入中…", "正在從 Google 試算表抓取最新資料，請稍候。");
+  showOverlay("資料載入中…", "正在抓取最新資料，請稍候。");
   setStatus("載入資料中…");
 
   const res = await fetch(gvizUrl(), { cache: "no-store" });
@@ -344,7 +344,7 @@ async function loadData(){
   if (iExp < 0)   missing.push("level_plus_exp_rate");
   if (iBp < 0)    missing.push("battle_power");
   if (missing.length){
-    throw new Error("找不到欄位：" + missing.join(", ") + "（請確認試算表標題列）");
+    throw new Error("找不到欄位：" + missing.join(", ") + "（請確認標題列）");
   }
 
   setProgress(progressValue, "整理資料中…");
