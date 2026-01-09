@@ -36,9 +36,7 @@
 <body>
   <div class="card">
     <h1>挑戰者伺服器（或其他伺服器）經驗值 / 戰力 排名查詢</h1>
-    <div class="muted">
-      排名規則：在所選伺服器內，依數值由大到小排序後「第幾列」=「第幾名」（同分會依原始資料順序往下排）。
-    </div>
+    
 
     <div class="row" style="margin-top:12px">
       <input id="nameInput" placeholder="輸入角色名稱（例：Ezra蓮）" />
@@ -58,7 +56,7 @@
     <div id="content"></div>
 
     <div class="muted" style="margin-top:10px">
-      如果載入失敗：請確認 Google 試算表權限為「知道連結的人可檢視」或已「發布到網路」。
+      如果載入失敗：可能API已關閉檢視。
     </div>
   </div>
 
@@ -308,7 +306,7 @@ function runSearch(){
   setStatus(`找到 ${out.length} 筆「${targetName}」資料。`, true);
 
   contentEl.innerHTML = tableHtml(
-    ["name","world","level_plus_exp_rate","經驗排名","battle_power","戰力排名"],
+    ["遊戲ID","伺服器","等級經驗百分比","經驗排名","戰鬥力","戰力排名"],
     out.map(x => [
       `<span class="pill">${escapeHtml(x.name)}</span>`,
       escapeHtml(x.world),
