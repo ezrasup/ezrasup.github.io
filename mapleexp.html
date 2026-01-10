@@ -259,17 +259,24 @@ function toNumber(v){
   return Number.isFinite(n) ? n : null;
 }
 
-/** 拆等級 / 經驗值% */
+/** 拆等級 / 經驗值%（✅ 去掉前導 0：067.096 -> 67.096） */
 function splitLevelExpRate(expVal){
   if (expVal === null || expVal === undefined || !Number.isFinite(expVal)) {
     return { level: "-", expPct: "-" };
   }
+
   let level = Math.floor(expVal / 1000);
   let rem = expVal - level * 1000;
   if (rem >= 999.9995) { level += 1; rem = 0; }
+
   const remFixed = rem.toFixed(3);
   const [i, d] = remFixed.split(".");
-  const expPct = i.padStart(3, "0") + "." + d;
+
+  // ✅ 核心：整數部分轉成數字再轉回字串（去掉前導 0），但保留 0
+  const intPart = Number.parseInt(i, 10);
+  const cleanI = Number.isFinite(intPart) ? String(intPart) : (i || "0");
+
+  const expPct = cleanI + "." + d;
   return { level, expPct };
 }
 
@@ -386,7 +393,7 @@ function escapeHtml(s){
     .replaceAll("&","&amp;")
     .replaceAll("<","&lt;")
     .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;")
+    .replaceAll('"',"quot;")
     .replaceAll("'","&#039;");
 }
 function tableHtml(headers, rows2d){
