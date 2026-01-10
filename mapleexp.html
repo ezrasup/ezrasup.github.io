@@ -91,7 +91,31 @@
       color:#6b7280;
     }
     .progress-row .pct{font-variant-numeric:tabular-nums;color:#111827;font-weight:700}
-    /* ================================= */
+
+    /* ✅ 查詢結果：上下 50 名控制區 */
+    .around-controls{
+      display:none;
+      margin-top:10px;
+      padding:10px;
+      border:1px solid #e5e7eb;
+      border-radius:12px;
+      background:#fafafa;
+    }
+    .around-controls.show{display:block;}
+    .around-row{
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+      align-items:center;
+    }
+    .around-controls .hint{
+      margin-top:6px;
+      font-size:12px;
+      color:#6b7280;
+    }
+    .around-controls button.secondary{
+      background:#fff;color:#111827
+    }
   </style>
 </head>
 <body>
@@ -137,6 +161,17 @@
     </div>
 
     <div id="status" class="status"></div>
+
+    <!-- ✅ 查詢自己時：上下 50 名 -->
+    <div id="aroundControls" class="around-controls">
+      <div class="around-row">
+        <button id="btnUp50" class="secondary">⬆ 顯示上方 50 名</button>
+        <button id="btnDown50" class="secondary">⬇ 顯示下方 50 名</button>
+        <span class="right small" id="aroundMeta"></span>
+      </div>
+      <div class="hint" id="aroundHint">（以「經驗榜」為基準，顯示你附近的排名，可一直往上/往下翻）</div>
+    </div>
+
     <div id="content"></div>
   </div>
 
@@ -167,6 +202,13 @@ const tabTopExp = $("tabTopExp");
 const tabTopBp = $("tabTopBp");
 const metaInfo = $("metaInfo");
 
+/* ✅ 上下 50 名 UI */
+const aroundControls = $("aroundControls");
+const btnUp50 = $("btnUp50");
+const btnDown50 = $("btnDown50");
+const aroundMeta = $("aroundMeta");
+const aroundHint = $("aroundHint");
+
 let rows = [];              // {rowIdx, name, world, job, exp, bp, updatedText, updatedDate}
 let worlds = [];
 let rankCache = new Map();      // key(world or "__ALL__") -> {expRank,bpRank,expSorted,bpSorted}
@@ -174,6 +216,16 @@ let jobRankCache = new Map();   // `${worldKey}||${job}` -> {expJobRank,bpJobRan
 let loadedAt = null;
 let latestUpdated = null;
 let activeTab = "result";
+
+/* ✅ 上下 50 名：狀態 */
+let aroundState = {
+  enabled: false,
+  worldKey: "__ALL__",    // "__ALL__" or specific world
+  centerRowIdx: null,     // 以哪一筆資料當中心（rowIdx）
+  listStart: 0,           // 目前顯示區間起點（0-based index on expSorted）
+  pageSize: 50,
+  expSortedRef: null      // buildRanks(worldKey).expSorted 的引用
+};
 
 /* ===== 進度條（假進度：0→92，完成跳 100） ===== */
 let progressValue = 0;
@@ -229,6 +281,9 @@ function setUiDisabled(disabled){
   nameInput.disabled = disabled;
   worldSelect.disabled = disabled;
   jobSelect.disabled = disabled;
+
+  btnUp50.disabled = disabled;
+  btnDown50.disabled = disabled;
 }
 function showOverlay(title="資料載入中…", sub="正在抓取最新資料，請稍候。"){
   overlayTitle.textContent = title;
@@ -272,7 +327,6 @@ function splitLevelExpRate(expVal){
   const remFixed = rem.toFixed(3);
   const [i, d] = remFixed.split(".");
 
-  // ✅ 核心：整數部分轉成數字再轉回字串（去掉前導 0），但保留 0
   const intPart = Number.parseInt(i, 10);
   const cleanI = Number.isFinite(intPart) ? String(intPart) : (i || "0");
 
@@ -310,7 +364,7 @@ function formatBattlePower(v){
    例：1,1,3,4...
 ========================= */
 function sameNumber(a, b, eps = 1e-9){
-  return (a !== null && b !== null && Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= eps);
+  return (a !== null && b !== null && Number.isFinite(a) && Math.abs(a - b) <= eps);
 }
 function buildCompetitionRankMap(sortedList, getVal){
   const m = new Map();
@@ -393,7 +447,7 @@ function escapeHtml(s){
     .replaceAll("&","&amp;")
     .replaceAll("<","&lt;")
     .replaceAll(">","&gt;")
-    .replaceAll('"',"quot;")
+    .replaceAll('"',"&quot;")
     .replaceAll("'","&#039;");
 }
 function tableHtml(headers, rows2d){
@@ -439,6 +493,132 @@ function refreshJobOptions(keepValue=true){
     jobSelect.value = "__ALL_JOB__";
   }
 }
+
+/* =========================
+   ✅ 查詢自己：上下 50 名（以經驗榜為基準）
+========================= */
+function hideAroundControls(){
+  aroundControls.classList.remove("show");
+  aroundMeta.textContent = "";
+  aroundHint.textContent = "（以「經驗榜」為基準，顯示你附近的排名，可一直往上/往下翻）";
+  aroundState = {
+    enabled: false,
+    worldKey: "__ALL__",
+    centerRowIdx: null,
+    listStart: 0,
+    pageSize: 50,
+    expSortedRef: null
+  };
+}
+function showAroundControls(){
+  aroundControls.classList.add("show");
+}
+
+function initAroundForSingleResult(oneRow, worldKey){
+  const pack = buildRanks(worldKey);
+  const expSorted = pack.expSorted;
+
+  // 找到中心在 expSorted 的 index
+  const centerIdx = expSorted.findIndex(r => r.rowIdx === oneRow.rowIdx);
+  if (centerIdx < 0){
+    // 這筆可能 exp 是 null
+    hideAroundControls();
+    return;
+  }
+
+  // 預設先顯示「中心附近」：中心往上 25 + 往下 24（共 50）
+  const pageSize = 50;
+  const halfUp = 25;
+  let start = Math.max(0, centerIdx - halfUp);
+  if (start + pageSize > expSorted.length){
+    start = Math.max(0, expSorted.length - pageSize);
+  }
+
+  aroundState.enabled = true;
+  aroundState.worldKey = worldKey;
+  aroundState.centerRowIdx = oneRow.rowIdx;
+  aroundState.listStart = start;
+  aroundState.pageSize = pageSize;
+  aroundState.expSortedRef = expSorted;
+
+  showAroundControls();
+  renderAroundTable(); // 立即渲染
+}
+
+function renderAroundTable(){
+  if (!aroundState.enabled || !aroundState.expSortedRef) return;
+
+  const worldKey = aroundState.worldKey;
+  const expSorted = aroundState.expSortedRef;
+  const start = aroundState.listStart;
+  const pageSize = aroundState.pageSize;
+
+  const end = Math.min(expSorted.length, start + pageSize);
+  const slice = expSorted.slice(start, end);
+
+  // 依「目前 slice」也做競賽排名顯示（但 rank 要用整榜 pack.expRank）
+  const pack = buildRanks(worldKey);
+  const expRankMap = pack.expRank;
+
+  // 找中心名次（整榜）
+  const centerRank = expRankMap.get(aroundState.centerRowIdx) ?? "-";
+
+  const worldText = (worldKey === "__ALL__") ? "全部伺服器" : worldKey;
+  aroundMeta.textContent = `（${worldText}｜你的經驗排名：${centerRank === "-" ? "-" : "第" + centerRank + "名"}）`;
+
+  // 上下按鈕可不可按
+  btnUp50.disabled = (start <= 0);
+  btnDown50.disabled = (end >= expSorted.length);
+
+  // 渲染到 content 下方（保留原本查詢結果表在上面，所以這裡用 append）
+  const headers = ["排名","name","world","職業","等級","經驗值%","更新時間"];
+  const body = slice.map(r=>{
+    const rk = expRankMap.get(r.rowIdx) ?? "-";
+    const s = splitLevelExpRate(r.exp);
+
+    // 中心那筆高亮一下（用 pill）
+    const isCenter = (r.rowIdx === aroundState.centerRowIdx);
+    const nameCell = isCenter ? `<span class="pill">${escapeHtml(r.name)}</span>` : escapeHtml(r.name);
+
+    return [
+      `<span class="mono">${rk === "-" ? "-" : "#" + rk}</span>`,
+      nameCell,
+      escapeHtml(r.world),
+      escapeHtml(r.job),
+      s.level,
+      s.expPct,
+      `<span class="nowrap">${escapeHtml(r.updatedText || "-")}</span>`
+    ];
+  });
+
+  // 把「附近榜」放在查詢結果表下面（如果你要放上面也可以改）
+  const aroundHtml =
+    `<div class="muted" style="margin-top:12px">你的附近排名（每次顯示 50 名，可一直往上/往下翻）：</div>` +
+    tableHtml(headers, body);
+
+  // contentEl 目前已經有查詢結果的表格：我們在最後加上附近榜（避免覆蓋）
+  // 先移除舊的附近榜（用一個標記容器）
+  const markerId = "__around_block__";
+  const old = document.getElementById(markerId);
+  if (old) old.remove();
+
+  const wrap = document.createElement("div");
+  wrap.id = markerId;
+  wrap.innerHTML = aroundHtml;
+  contentEl.appendChild(wrap);
+}
+
+function shiftAround(deltaPages){
+  if (!aroundState.enabled) return;
+  const expSorted = aroundState.expSortedRef;
+  const pageSize = aroundState.pageSize;
+
+  let nextStart = aroundState.listStart + deltaPages * pageSize;
+  nextStart = Math.max(0, Math.min(nextStart, Math.max(0, expSorted.length - pageSize)));
+  aroundState.listStart = nextStart;
+  renderAroundTable();
+}
+/* ========================= */
 
 async function loadData(){
   showOverlay("資料載入中…", "正在抓取最新資料，請稍候。");
@@ -596,6 +776,7 @@ function buildJobRanks(worldKey, job){
 
 function runSearch(){
   activeTab = "result";
+  hideAroundControls(); // ✅ 每次查詢先關掉
 
   const targetName = normalizeText(nameInput.value);
   const targetWorld = worldSelect.value;
@@ -655,6 +836,7 @@ function runSearch(){
     const bpJobRank  = (r.bp  !== null) ? (jobPack.bpJobRank.get(r.rowIdx)  ?? "-") : "-";
 
     return {
+      rowIdx: r.rowIdx,
       name: r.name,
       world: r.world,
       job: r.job,
@@ -692,30 +874,48 @@ function runSearch(){
       ];
     })
   );
+
+  /* ✅ 只有「結果剛好 1 筆」才開啟上下 50 名（你要多筆也能做，但會變很複雜） */
+  if (out.length === 1){
+    const one = out[0];
+
+    // 如果使用者選 __ALL__ 但其實有多筆同名（被 world filter 擋掉了不會發生）
+    // 這裡直接用目前 worldSelect 的榜：__ALL__ 或 指定伺服器
+    const worldKey = (worldSelect.value === "__ALL__") ? "__ALL__" : one.world;
+
+    if (one.exp === null){
+      hideAroundControls();
+    } else {
+      initAroundForSingleResult(one, worldKey);
+    }
+  } else {
+    // 多筆同名：提示使用者先選伺服器再用
+    hideAroundControls();
+    if (worldSelect.value === "__ALL__"){
+      aroundHint.textContent = "同名角色有多筆時，請先選擇伺服器，再使用上下 50 名功能。";
+    }
+  }
 }
 
 function renderTop(metric){
+  hideAroundControls(); // ✅ 切到前100頁就關掉
   activeTab = (metric === "exp") ? "topExp" : "topBp";
 
   const worldKey = worldKeyForTop(); // "__ALL__" or specific
   const jobFilter = jobSelect.value || "__ALL_JOB__";
 
-  // ✅ buildRanks("__ALL__") 代表全伺服器合併榜（且已是並列排名）
   const pack = buildRanks(worldKey);
   let list = (metric === "exp") ? pack.expSorted : pack.bpSorted;
 
-  // 套用職業篩選（保留原排序）
   if (jobFilter !== "__ALL_JOB__"){
     list = list.filter(r => r.job === jobFilter);
   }
 
-  // ✅ 針對「目前榜單 list」計算並列名次（跳號）
   const listRankMap = buildCompetitionRankMap(
     list,
     r => (metric === "exp" ? r.exp : r.bp)
   );
 
-  // ✅ 前 100 名：若第 100 名與後面同值，全部同名次一起顯示（可能 >100 筆）
   let end = Math.min(100, list.length);
   if (list.length > 100){
     const v100 = (metric === "exp") ? list[99].exp : list[99].bp;
@@ -824,11 +1024,18 @@ tabTopExp.addEventListener("click", ()=>setActiveTab("topExp"));
 tabTopBp.addEventListener("click", ()=>setActiveTab("topBp"));
 nameInput.addEventListener("keydown", (e)=>{ if (e.key==="Enter") setActiveTab("result"); });
 
+// ✅ 上下 50 名按鈕
+btnUp50.addEventListener("click", ()=>shiftAround(-1));
+btnDown50.addEventListener("click", ()=>shiftAround(+1));
+
 // 伺服器改變：刷新職業下拉 + 若目前在前100名頁面就重繪榜單
 worldSelect.addEventListener("change", ()=>{
   refreshJobOptions(true);
+  hideAroundControls();
+
   if (activeTab === "topExp") renderTop("exp");
   if (activeTab === "topBp") renderTop("bp");
+  if (activeTab === "result") runSearch();
 });
 
 // 職業改變：只影響前100名（經驗/戰力）
