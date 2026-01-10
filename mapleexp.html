@@ -196,6 +196,9 @@ const SHEET_ID = "1GCs7Dovg7DJkENlyTNqn_gkFc6ARSdinBrNoZUvCM0Y";
 const SHEET_NAME = "character_data";
 /** ================================= */
 
+/** ✅ 過濾異常戰鬥力：>= 100 億 直接排除（避免榜單被污染） */
+const BP_EXCLUDE_MIN = 10_000_000_000;
+
 const $ = (id) => document.getElementById(id);
 
 const overlay = $("overlay");
@@ -542,7 +545,6 @@ function hideAroundControls(){
     pageSize: 50
   };
 
-  // 清掉舊的附近榜區塊
   const markerId = "__around_block__";
   const old = document.getElementById(markerId);
   if (old) old.remove();
@@ -553,22 +555,18 @@ function showAroundControls(){
 }
 
 function initAroundForSingleResult(oneRow, worldKey){
-  // 先決定預設 metric：能用戰力就讓使用者選；預設還是 exp
   aroundState.enabled = true;
   aroundState.worldKey = worldKey;
   aroundState.centerRowIdx = oneRow.rowIdx;
   aroundState.pageSize = 50;
 
-  // Tab availability
   tabAroundExp.disabled = (oneRow.exp === null);
   tabAroundBp.disabled  = (oneRow.bp  === null);
 
-  // 預設用 exp；如果 exp 沒資料但 bp 有，就改用 bp
   let defaultMetric = "exp";
   if (oneRow.exp === null && oneRow.bp !== null) defaultMetric = "bp";
   aroundState.metric = defaultMetric;
 
-  // 設定起點：以目前 metric 的榜，中心往上 25 顯示 50
   const pack = buildRanks(worldKey);
   const list = (defaultMetric === "exp") ? pack.expSorted : pack.bpSorted;
 
@@ -587,7 +585,7 @@ function initAroundForSingleResult(oneRow, worldKey){
   aroundState.listStart = start;
 
   showAroundControls();
-  setAroundTab(defaultMetric); // 會 render
+  setAroundTab(defaultMetric);
 }
 
 function renderAroundTable(){
@@ -606,18 +604,15 @@ function renderAroundTable(){
   const metricText = (metric === "exp") ? "經驗" : "戰力";
   aroundMeta.textContent = `（${worldText}｜你的${metricText}排名：${centerRank === "-" ? "-" : "第" + centerRank + "名"}）`;
 
-  // 依 listStart/pageSize 切片
   const start = Math.max(0, Math.min(aroundState.listStart, Math.max(0, list.length - aroundState.pageSize)));
   aroundState.listStart = start;
 
   const end = Math.min(list.length, start + aroundState.pageSize);
   const slice = list.slice(start, end);
 
-  // 上下按鈕可不可按
   btnUp50.disabled = (start <= 0);
   btnDown50.disabled = (end >= list.length);
 
-  // 表頭/內容
   let headers;
   if (metric === "exp"){
     headers = ["排名","name","world","職業","等級","經驗值%","更新時間"];
@@ -715,7 +710,8 @@ async function loadData(){
 
   setProgress(progressValue, "整理資料中…");
 
-  rows = table.rows.map((r, idx) => {
+  // ✅ 先做初步轉換
+  let tmpRows = table.rows.map((r, idx) => {
     const c = r.c || [];
     const name  = normalizeText(c[iName]?.v);
     const world = normalizeText(c[iWorld]?.v);
@@ -725,6 +721,19 @@ async function loadData(){
     const up    = parseUpdatedCell(c[iUpdated]);
     return { rowIdx: idx, name, world, job, exp, bp, updatedText: up.text || "-", updatedDate: up.date || null };
   }).filter(x => x.name && x.world);
+
+  // ✅ 過濾掉戰鬥力 >= 100 億 的異常資料（整筆排除）
+  const beforeCount = tmpRows.length;
+  tmpRows = tmpRows.filter(r => !(r.bp !== null && r.bp >= BP_EXCLUDE_MIN));
+  const removedCount = beforeCount - tmpRows.length;
+
+  // ✅ 重新連號 rowIdx（避免 rank map 用舊 idx）
+  rows = tmpRows.map((r, newIdx) => ({ ...r, rowIdx: newIdx }));
+
+  // ✅ 如果有移除，印 log（不影響 UI）
+  if (removedCount > 0){
+    console.warn(`已過濾異常戰鬥力資料：${removedCount} 筆（bp >= ${BP_EXCLUDE_MIN}）`);
+  }
 
   rankCache.clear();
   jobRankCache.clear();
@@ -936,8 +945,6 @@ function runSearch(){
   if (out.length === 1){
     const one = out[0];
     const worldKey = (worldSelect.value === "__ALL__") ? "__ALL__" : one.world;
-
-    // 只有單筆才開附近榜
     initAroundForSingleResult(one, worldKey);
   }
 }
@@ -1069,7 +1076,6 @@ tabTopExp.addEventListener("click", ()=>setActiveTab("topExp"));
 tabTopBp.addEventListener("click", ()=>setActiveTab("topBp"));
 nameInput.addEventListener("keydown", (e)=>{ if (e.key==="Enter") setActiveTab("result"); });
 
-// ✅ 附近榜 tabs
 tabAroundExp.addEventListener("click", ()=>{
   if (!tabAroundExp.disabled) setAroundTab("exp");
 });
@@ -1077,11 +1083,9 @@ tabAroundBp.addEventListener("click", ()=>{
   if (!tabAroundBp.disabled) setAroundTab("bp");
 });
 
-// ✅ 上下 50 名按鈕
 btnUp50.addEventListener("click", ()=>shiftAround(-1));
 btnDown50.addEventListener("click", ()=>shiftAround(+1));
 
-// 伺服器改變：刷新職業下拉 + 重新查詢/重繪
 worldSelect.addEventListener("change", ()=>{
   refreshJobOptions(true);
   hideAroundControls();
@@ -1091,7 +1095,6 @@ worldSelect.addEventListener("change", ()=>{
   if (activeTab === "result") runSearch();
 });
 
-// 職業改變：只影響前100名（經驗/戰力）
 jobSelect.addEventListener("change", ()=>{
   if (activeTab === "topExp") renderTop("exp");
   if (activeTab === "topBp") renderTop("bp");
